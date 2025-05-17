@@ -36,7 +36,10 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.os == 'windows-latest' && 'x86_64-pc-windows-msvc' || 'x86_64-apple-darwin, x86_64-unknown-linux-gnu' }}
+          targets: |
+            ${{ matrix.os == 'windows-latest' && 'x86_64-pc-windows-msvc' ||
+                matrix.os == 'macos-latest' && 'x86_64-apple-darwin' ||
+                'x86_64-unknown-linux-gnu' }}
 
       - name: Build
         run: cargo build --release
