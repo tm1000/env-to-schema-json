@@ -21,6 +21,11 @@ jobs:
           - os: macos-latest
             artifact_name: env-to-schema-json
             asset_name: env-to-schema-json-macos
+
+          - os: ubuntu-latest
+            artifact_name: env-to-schema-json
+            asset_name: env-to-schema-json-linux
+
           - os: windows-latest
             artifact_name: env-to-schema-json.exe
             asset_name: env-to-schema-json-windows.exe
@@ -31,7 +36,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.os == 'windows-latest' && 'x86_64-pc-windows-msvc' || 'x86_64-apple-darwin' }}
+          targets: ${{ matrix.os == 'windows-latest' && 'x86_64-pc-windows-msvc' || 'x86_64-apple-darwin, x86_64-unknown-linux-gnu' }}
 
       - name: Build
         run: cargo build --release
