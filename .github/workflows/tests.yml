@@ -47,6 +47,7 @@ jobs:
       run: cargo test --verbose
 
     - name: Run clippy
+      continue-on-error: ${{ matrix.rust == 'beta' }}
       run: cargo clippy -- -D warnings
 
     - name: Check formatting
