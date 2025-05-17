@@ -27,6 +27,9 @@ jobs:
       with:
         toolchain: ${{ matrix.rust }}
 
+    - name: Add clippy
+      run: rustup component add clippy
+
     - name: Cache dependencies
       uses: actions/cache@v3
       with:
