@@ -57,7 +57,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if args.debug {
-        println!("ENV JSON: {}", serde_json::to_string_pretty(&Value::Object(config.clone()))?);
+        println!(
+            "ENV JSON: {}",
+            serde_json::to_string_pretty(&Value::Object(config.clone()))?
+        );
     }
 
     let validated_config = fix_and_validate_json(&schema, config.clone(), false)?;
