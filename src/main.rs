@@ -143,10 +143,10 @@ fn fix_and_validate_json(
                                         if index < arr.len() {
                                             if let Value::Object(map) = &mut arr[index] {
                                                 in_array = true;
-                                                return Some(map)
+                                                return Some(map);
                                             } else {
                                                 println!("Failed to get object at index {}", index);
-                                                return None
+                                                return None;
                                             }
                                         } else {
                                             println!("Index {} out of bounds", index);
@@ -156,9 +156,12 @@ fn fix_and_validate_json(
                                     None
                                 }
                                 _ => {
-                                    println!("Failed to get value at path {}", path_parts.join("."));
+                                    println!(
+                                        "Failed to get value at path {}",
+                                        path_parts.join(".")
+                                    );
                                     None
-                                },
+                                }
                             })
                             .unwrap();
                     }
@@ -207,9 +210,7 @@ fn fix_and_validate_json(
                                 };
                                 current.insert(last_part.to_string(), new_value.unwrap());
                             }
-                            _ => {
-                                return Err(format!("Unsupported type: {:?}", error.kind))
-                            }
+                            _ => return Err(format!("Unsupported type: {:?}", error.kind)),
                         }
                     }
                 }
