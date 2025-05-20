@@ -7,7 +7,9 @@ fn test_main_with_schema_file() {
     unsafe {
         // Create a temporary schema file
         let mut schema_file = NamedTempFile::new().unwrap();
-        schema_file.write_all(br#"{
+        schema_file
+            .write_all(
+                br#"{
             "type": "object",
             "properties": {
                 "database": {
@@ -18,7 +20,9 @@ fn test_main_with_schema_file() {
                     }
                 }
             }
-        }"#).unwrap();
+        }"#,
+            )
+            .unwrap();
         schema_file.flush().unwrap();
 
         // Set test environment variables

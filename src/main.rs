@@ -1,5 +1,5 @@
 use clap::Parser;
-use env_to_schema_json::{process_env_vars, create_nested_json, fix_and_validate_json};
+use env_to_schema_json::{create_nested_json, fix_and_validate_json, process_env_vars};
 use serde_json::Map;
 use serde_json::Value;
 use std::io::Read;

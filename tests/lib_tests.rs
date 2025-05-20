@@ -1,4 +1,6 @@
-use env_to_schema_json::{process_env_vars, create_nested_json, fix_and_validate_json, resolve_ref};
+use env_to_schema_json::{
+    create_nested_json, fix_and_validate_json, process_env_vars, resolve_ref,
+};
 use serde_json::{Map, Value, json};
 use std::env;
 
@@ -56,8 +58,14 @@ fn test_fix_and_validate_json() {
     let mut config = Map::new();
     config.insert("string".to_string(), Value::String("string".to_string()));
     config.insert("number".to_string(), Value::String("42".to_string()));
-    config.insert("boolean_true".to_string(), Value::String("true".to_string()));
-    config.insert("boolean_false".to_string(), Value::String("false".to_string()));
+    config.insert(
+        "boolean_true".to_string(),
+        Value::String("true".to_string()),
+    );
+    config.insert(
+        "boolean_false".to_string(),
+        Value::String("false".to_string()),
+    );
     config.insert("array".to_string(), Value::String("1, 2, 3".to_string()));
 
     let result = fix_and_validate_json(&schema, config, false).unwrap();
