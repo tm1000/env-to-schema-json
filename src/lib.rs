@@ -274,11 +274,27 @@ pub fn process_env_vars(
             .to_lowercase()
             .replace("||||", "_");
 
+        // Remove quotes from the start and end of the value if present
+        let trimmed_value = raw_value.trim();
+        let value = match (trimmed_value.starts_with('"') && trimmed_value.ends_with('"'))
+            || (trimmed_value.starts_with('\'') && trimmed_value.ends_with('\''))
+        {
+            true => {
+                let len = trimmed_value.len();
+                if len >= 2 {
+                    trimmed_value[1..len - 1].to_string()
+                } else {
+                    trimmed_value.to_string()
+                }
+            }
+            false => raw_value.clone(),
+        };
+
         result.insert(
             key.clone(),
             EnvProperty {
                 env: key.clone(),
-                value: raw_value.clone(),
+                value,
                 path,
             },
         );

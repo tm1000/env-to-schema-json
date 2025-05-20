@@ -4,4 +4,4 @@ set -o allexport
 source .env
 set +o allexport
 
-cargo run -- --prefix=CADDY_ --debug --schema ./caddy-schema.json
+cat ./caddy-schema.json | cargo run -- --prefix=CADDY_ --debug

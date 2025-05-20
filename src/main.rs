@@ -14,7 +14,7 @@ struct Args {
     #[arg(short, long)]
     debug: bool,
 
-    #[arg(short, long)]
+    #[arg(short, long, default_value = "")]
     schema: String,
 }
 
@@ -46,6 +46,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Read and parse the schema from file
         schema_content = std::fs::read_to_string(args.schema)?;
     }
+
+    if schema_content.is_empty() {
+        return Err("Pipe schema from stdin or provide a schema file".into());
+    }
+
     let schema: Value = serde_json::from_str(&schema_content)?;
 
     let result = process_env_vars(&args.prefix)?;
