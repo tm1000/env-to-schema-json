@@ -35,7 +35,7 @@ pub fn fix_and_validate_json(
 ) -> Result<Map<String, Value>, String> {
     // Validate the generated JSON against the schema
     let compiled_schema =
-        JSONSchema::compile(&schema).map_err(|e| format!("Failed to compile schema: {}", e))?;
+        JSONSchema::compile(schema).map_err(|e| format!("Failed to compile schema: {}", e))?;
 
     let instance = Value::Object(config.clone());
 
@@ -77,7 +77,7 @@ pub fn fix_and_validate_json(
                             .and_then(|v| match v {
                                 Value::Object(map) => Some(map),
                                 Value::Array(arr) => {
-                                    if let Some(index) = parent_parts[i + 1].parse::<usize>().ok() {
+                                    if let Ok(index) = parent_parts[i + 1].parse::<usize>() {
                                         if index < arr.len() {
                                             if let Value::Object(map) = &mut arr[index] {
                                                 in_array = true;
@@ -115,7 +115,7 @@ pub fn fix_and_validate_json(
                                             PrimitiveType::Array => {
                                                 // Split by spaces or commas and trim each item
                                                 let items: Vec<Value> = existing
-                                                    .split(|c| c == ' ' || c == ',')
+                                                    .split([' ', ','])
                                                     .filter(|s| !s.is_empty())
                                                     .map(|s| Value::String(s.trim().to_string()))
                                                     .collect();
@@ -139,7 +139,9 @@ pub fn fix_and_validate_json(
                                                 Err("Unsupported type: Null".to_string())
                                             }
                                             PrimitiveType::Number => {
-                                                if let Ok(value) = existing.parse::<serde_json::Number>() {
+                                                if let Ok(value) =
+                                                    existing.parse::<serde_json::Number>()
+                                                {
                                                     Ok(Value::Number(value))
                                                 } else {
                                                     Err("Unsupported type: Number".to_string())
@@ -165,7 +167,7 @@ pub fn fix_and_validate_json(
                     }
                 }
             }
-            Ok(fix_and_validate_json(&schema, fixed_config, true)?)
+            Ok(fix_and_validate_json(schema, fixed_config, true)?)
         }
     }
 }
@@ -277,7 +279,7 @@ pub fn process_env_vars(
             EnvProperty {
                 env: key.clone(),
                 value: raw_value.clone(),
-                path: path,
+                path,
             },
         );
     }
