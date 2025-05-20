@@ -1,0 +1,105 @@
+{
+	// Use IntelliSense to learn about possible attributes.
+	// Hover to view descriptions of existing attributes.
+	// For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+	"version": "0.2.0",
+	"configurations": [
+		{
+			"type": "lldb",
+			"request": "attach",
+			"name": "Attach",
+			"pid": "${command:pickMyProcess}" // use ${command:pickProcess} to pick other users' processes
+		},
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "Cargo launch",
+			"cargo": {
+				"args": [
+					"build",
+					"--lib"
+				]
+			},
+			"args": []
+		},
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "Debug unit tests in library 'env_to_schema_json'",
+			"cargo": {
+				"args": [
+					"test",
+					"--no-run",
+					"--lib",
+					"--package=env-to-schema-json"
+				],
+				"filter": {
+					"name": "env_to_schema_json",
+					"kind": "lib"
+				}
+			},
+			"args": [],
+			"cwd": "${workspaceFolder}"
+		},
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "Debug executable 'env-to-schema-json'",
+			"cargo": {
+				"args": [
+					"build",
+					"--bin=env-to-schema-json",
+					"--package=env-to-schema-json"
+				],
+				"filter": {
+					"name": "env-to-schema-json",
+					"kind": "bin"
+				}
+			},
+			"args": [
+				"--prefix=CADDY_",
+				"--schema",
+				"./example/caddy-schema.json"
+			],
+			"cwd": "${workspaceFolder}"
+		},
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "Debug unit tests in executable 'env-to-schema-json'",
+			"cargo": {
+				"args": [
+					"test",
+					"--no-run",
+					"--bin=env-to-schema-json",
+					"--package=env-to-schema-json"
+				],
+				"filter": {
+					"name": "env-to-schema-json",
+					"kind": "bin"
+				}
+			},
+			"args": [],
+			"cwd": "${workspaceFolder}"
+		},
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "Debug integration test 'config_tests'",
+			"cargo": {
+				"args": [
+					"test",
+					"--no-run",
+					"--test=config_tests",
+					"--package=env-to-schema-json"
+				],
+				"filter": {
+					"name": "config_tests",
+					"kind": "test"
+				}
+			},
+			"args": [],
+			"cwd": "${workspaceFolder}"
+		}
+	]
+}
