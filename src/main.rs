@@ -56,6 +56,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         create_nested_json(&mut config, &props.path, &props.value);
     }
 
+    if args.debug {
+        println!("ENV JSON: {}", serde_json::to_string_pretty(&Value::Object(config.clone()))?);
+    }
+
     let validated_config = fix_and_validate_json(&schema, config.clone(), false)?;
     let config_json = serde_json::to_string_pretty(&Value::Object(validated_config))?;
     println!("{}", config_json);
