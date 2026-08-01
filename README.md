@@ -12,7 +12,7 @@ The tool transforms prefixed environment variables into a nested JSON object, th
 
 - **Schema-driven validation** — validates generated JSON against any valid JSON Schema
 - **Automatic type fixing** — converts string values to match schema types (integers, booleans, arrays, etc.)
-- **Nested object support** — use `__` to create nested structures (e.g., `DB__HOST` → `db.host`)
+- **Nested object support** — use `_` to create nested structures (e.g., `DB_HOST` → `db.host`)
 - **Array support** — numeric path segments create array elements
 - **Stdin or file input** — pipe a schema or provide a file path
 
