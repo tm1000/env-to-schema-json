@@ -1,51 +1,53 @@
-# Environment Variables to JSON
+# env-to-schema-json
 
-A command-line utility written in Rust that converts environment variables into JSON format based on [JSON Schema](https://json-schema.org/).
+A Rust CLI tool that converts environment variables into a JSON object validated against a [JSON Schema](https://json-schema.org/).
 
-## Why
+## Overview
 
-Let's say you have a JSON Schema file that defines the structure of a configuration file. You want to use that configuration file in a program, but you don't want to write code to parse it. You can use this tool to convert the environment variables into a JSON object that matches the schema.
+Define your configuration structure using JSON Schema, set environment variables with a prefix, and get a valid JSON configuration — no manual parsing code required.
+
+The tool transforms prefixed environment variables into a nested JSON object, then validates and auto-fixes type mismatches against your schema.
+
+## Features
+
+- **Schema-driven validation** — validates generated JSON against any valid JSON Schema
+- **Automatic type fixing** — converts string values to match schema types (integers, booleans, arrays, etc.)
+- **Nested object support** — use `__` to create nested structures (e.g., `DB__HOST` → `db.host`)
+- **Array support** — numeric path segments create array elements
+- **Stdin or file input** — pipe a schema or provide a file path
 
 ## Example
 
-Using the basic schema from [JSON Schema Examples](https://json-schema.org/learn/miscellaneous-examples#basic):
+Given a JSON Schema:
+
 ```json
 {
-  "$id": "https://example.com/person.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Person",
   "type": "object",
   "properties": {
-    "first_name": {
-      "type": "string",
-      "description": "The person's first name."
-    },
-    "last_name": {
-      "type": "string",
-      "description": "The person's last name."
-    },
-    "age": {
-      "description": "Age in years which must be equal to or greater than zero.",
-      "type": "integer",
-      "minimum": 0
-    }
+    "first_name": { "type": "string" },
+    "last_name": { "type": "string" },
+    "age": { "type": "integer", "minimum": 0 }
   }
 }
 ```
 
-And the following environment variables:
+With these environment variables:
+
 ```bash
-PERSON_FIRST_NAME=John
-PERSON_LAST_NAME=Doe
-PERSON_AGE=30
+export PERSON_FIRST_NAME=John
+export PERSON_LAST_NAME=Doe
+export PERSON_AGE=30
 ```
 
-Running the following command:
+Run:
+
 ```bash
-cat example/basic-schema.json | env-to-schema-json --prefix PERSON_
+cat schema.json | env-to-schema-json --prefix PERSON_
 ```
 
-The following JSON will be generated:
+Output:
+
 ```json
 {
   "first_name": "John",
@@ -56,22 +58,68 @@ The following JSON will be generated:
 
 ## Installation
 
+### From source
+
+```bash
+cargo install env-to-schema-json
+```
+
+### Cargo binary
+
+```bash
+cargo build --release
+cp target/release/env-to-schema-json /usr/local/bin/
+```
+
 ## Usage
 
 ```bash
-cat schema.json | env-to-schema-json --prefix <prefix>
-# or
-env-to-schema-json --prefix <prefix> < schema.json
+env-to-schema-json --prefix <PREFIX> [schema.json]
 ```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-p, --prefix` | `PREFIX_` | Prefix to filter environment variables |
+| `-s, --schema` | _(none)_ | Path to JSON schema file (omit to read from stdin) |
+| `-d, --debug` | `false` | Print the generated JSON before validation |
+
+### Reading from stdin
+
+```bash
+cat schema.json | env-to-schema-json --prefix MYAPP_
+```
+
+### Reading from a file
+
+```bash
+env-to-schema-json --prefix MYAPP_ schema.json
+```
+
+## Path Transformation
+
+Environment variable names are transformed into JSON paths using these rules:
+
+| Env Var | JSON Path |
+|---------|-----------|
+| `APP_HOST=localhost` | `app.host` |
+| `APP_DB__HOST=localhost` | `app.db_host` |
+| `APP_SERVERS__0_HOST=a` | `app.servers[0].host` |
+| `APP_SERVERS__1_HOST=b` | `app.servers[1].host` |
+
+- Underscores (`_`) become dots (`.`) — creating nested objects
+- Double underscores (`__`) become literal underscores (`_`) — for flat keys containing underscores
+- Numeric path segments create array elements
+- All keys are converted to lowercase
 
 ## Development
 
-Make sure you have Rust installed on your system. Then:
-
 ```bash
-cargo run
+# Run
+cargo run -- --prefix PREFIX_
+
+# Run tests
+cargo test
+
+# Run with schema file
+cargo run -- --prefix CADDY_ --schema example/caddy-schema.json
 ```
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.

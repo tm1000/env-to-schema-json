@@ -160,7 +160,7 @@ pub fn fix_and_validate_json(
                                         existing
                                     )),
                                 };
-                                current.insert(last_part.to_string(), new_value.unwrap());
+                                current.insert(last_part.to_string(), new_value?);
                             }
                             _ => return Err(format!("Unsupported type: {:?}", error.kind)),
                         }
@@ -213,18 +213,21 @@ pub fn create_nested_json(config: &mut Map<String, Value>, path: &str, value: &s
         match entry {
             Value::Array(arr) => {
                 let idx = next.parse::<usize>().unwrap();
+                // Pad with placeholders so array length is independent of
+                // processing order; the actual value for `idx` is always
+                // assigned explicitly below.
                 while arr.len() <= idx {
-                    if rest.len() == 1 {
-                        // If this is the last part, use the value directly
-                        arr.push(Value::String(value.to_string()));
-                    } else {
-                        arr.push(Value::Object(Map::new()));
-                    }
+                    arr.push(Value::Null);
                 }
                 if rest.len() > 1 {
+                    if !matches!(arr[idx], Value::Object(_)) {
+                        arr[idx] = Value::Object(Map::new());
+                    }
                     if let Value::Object(next_map) = &mut arr[idx] {
                         set_nested_value(next_map, &rest[1..], value);
                     }
+                } else {
+                    arr[idx] = Value::String(value.to_string());
                 }
             }
             Value::Object(next_map) => {
