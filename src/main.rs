@@ -1,7 +1,10 @@
 use clap::Parser;
-use env_to_schema_json::{create_nested_json, fix_and_validate_json, process_env_vars};
+use env_to_schema_json::{
+    create_nested_json, fix_and_validate_json_with_sources, path_to_pointer, process_env_vars,
+};
 use serde_json::Map;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::io::Read;
 
 #[derive(Parser)]
@@ -56,9 +59,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let result = process_env_vars(&args.prefix)?;
 
     let mut config = Map::new();
+    // Remembers which environment variable produced each location, so a
+    // validation failure can name the variable instead of a bare JSON pointer.
+    let mut sources: HashMap<String, String> = HashMap::new();
 
-    for (_env_var, props) in result {
+    for (env_var, props) in &result {
         create_nested_json(&mut config, &props.path, &props.value);
+        sources.insert(path_to_pointer(&props.path), env_var.clone());
     }
 
     if args.debug {
@@ -68,7 +75,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    let validated_config = fix_and_validate_json(&schema, config.clone(), false)?;
+    let validated_config =
+        fix_and_validate_json_with_sources(&schema, config.clone(), false, &sources)?;
     let config_json = serde_json::to_string_pretty(&Value::Object(validated_config))?;
     println!("{}", config_json);
 

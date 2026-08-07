@@ -12,163 +12,267 @@ pub struct EnvProperty {
     pub path: String,
 }
 
-/// Fix and validate the generated JSON against the schema. This function
-/// takes the input JSON and the schema as a JSON object, and returns a
-/// Result containing the validated JSON. If the JSON is invalid, a String
-/// containing the error messages is returned. If the JSON is valid, the
-/// same JSON is returned.
+/// Maximum number of coercion passes attempted before giving up. Each pass can
+/// only make a value more specific (string -> array -> typed array items), so a
+/// small bound is enough to reach a fixed point on any real schema.
+const MAX_FIX_PASSES: usize = 8;
+
+/// A validation error captured as owned data, so the instance can be mutated
+/// after the borrow taken by the validator has been released.
+struct Pending {
+    pointer: String,
+    target: Option<PrimitiveType>,
+    message: String,
+}
+
+/// Converts an internal dotted path (`servers.0.port`) into an RFC 6901 JSON
+/// pointer (`/servers/0/port`), escaping `~` and `/` so the result can be
+/// compared against the pointers reported by the validator.
 ///
-/// If the JSON is invalid, the function will try to fix the errors by
-/// converting the values to the correct type. This is done by parsing the
-/// error messages and modifying the JSON accordingly. If the errors cannot
-/// be fixed, the function will return an error message.
+/// # Arguments
 ///
-/// The function takes an additional parameter `retried` which indicates
-/// whether the function has been called before. If `retried` is false, the
-/// function will try to fix the errors and call itself recursively. If
-/// `retried` is true, the function will return an error message without
-/// trying to fix the errors.
+/// * `path` - The dotted path produced by [`process_env_vars`].
+///
+/// # Returns
+///
+/// * `String` - The equivalent JSON pointer.
+pub fn path_to_pointer(path: &str) -> String {
+    let mut pointer = String::new();
+    for segment in path.split('.') {
+        pointer.push('/');
+        pointer.push_str(&segment.replace('~', "~0").replace('/', "~1"));
+    }
+    pointer
+}
+
+/// Collects the current validation errors as owned [`Pending`] entries. An
+/// empty result means the instance validates cleanly.
+fn collect_pending(compiled_schema: &JSONSchema, instance: &Value) -> Vec<Pending> {
+    match compiled_schema.validate(instance) {
+        Ok(()) => Vec::new(),
+        Err(errors) => errors
+            .map(|error| Pending {
+                pointer: error.instance_path.to_string(),
+                target: match &error.kind {
+                    ValidationErrorKind::Type {
+                        kind: TypeKind::Single(primitive_type),
+                    } => Some(*primitive_type),
+                    _ => None,
+                },
+                message: error.to_string(),
+            })
+            .collect(),
+    }
+}
+
+/// Converts a string into the requested primitive type.
+fn coerce_string(existing: &str, target: PrimitiveType) -> Result<Value, String> {
+    match target {
+        PrimitiveType::Array => {
+            // Split by spaces or commas and trim each item. Items stay strings
+            // here; a later pass coerces them against the `items` schema.
+            let items: Vec<Value> = existing
+                .split([' ', ','])
+                .filter(|s| !s.is_empty())
+                .map(|s| Value::String(s.trim().to_string()))
+                .collect();
+            Ok(Value::Array(items))
+        }
+        PrimitiveType::Boolean => existing
+            .parse::<bool>()
+            .map(Value::Bool)
+            .map_err(|_| "Unsupported type: Boolean".to_string()),
+        PrimitiveType::Integer => existing
+            .parse::<i64>()
+            .map(|value| Value::Number(value.into()))
+            .map_err(|_| "Unsupported type: Integer".to_string()),
+        PrimitiveType::Number => existing
+            .parse::<serde_json::Number>()
+            .map(Value::Number)
+            .map_err(|_| "Unsupported type: Number".to_string()),
+        PrimitiveType::String => Ok(Value::String(existing.to_string())),
+        PrimitiveType::Null => Err("Unsupported type: Null".to_string()),
+        PrimitiveType::Object => Err("Unsupported type: Object".to_string()),
+    }
+}
+
+/// Attempts to coerce the value at a single error location.
+///
+/// Returns `Ok(true)` if the instance changed, `Ok(false)` if there was nothing
+/// to do (the error is not a single-type mismatch, the location no longer
+/// exists, or the value is not a string), and `Err` if the value cannot be
+/// represented as the required type.
+fn coerce_at(instance: &mut Value, item: &Pending) -> Result<bool, String> {
+    let Some(target) = item.target else {
+        return Ok(false);
+    };
+    let Some(slot) = instance.pointer_mut(&item.pointer) else {
+        return Ok(false);
+    };
+    let Value::String(existing) = slot else {
+        return Ok(false);
+    };
+
+    let replacement = coerce_string(&existing.clone(), target)?;
+    if replacement == *slot {
+        return Ok(false);
+    }
+    *slot = replacement;
+    Ok(true)
+}
+
+/// Renders one validation failure, naming the environment variable responsible
+/// where one is known.
+fn describe(
+    pointer: &str,
+    message: &str,
+    instance: &Value,
+    sources: &HashMap<String, String>,
+) -> String {
+    if pointer.is_empty() {
+        return message.to_string();
+    }
+
+    if let Some(env_var) = sources.get(pointer) {
+        return format!("{} (from {}): {}", pointer, env_var, message);
+    }
+
+    // A null at a location no environment variable set is padding inserted by
+    // `create_nested_json` to fill a gap in the array indices.
+    if matches!(instance.pointer(pointer), Some(Value::Null))
+        && let Some((parent, _)) = pointer.rsplit_once('/')
+    {
+        let prefix = format!("{}/", parent);
+        let mut siblings: Vec<&str> = sources
+            .iter()
+            .filter(|(candidate, _)| candidate.starts_with(&prefix))
+            .map(|(_, env_var)| env_var.as_str())
+            .collect();
+        if !siblings.is_empty() {
+            siblings.sort_unstable();
+            return format!(
+                "{}: no environment variable sets this array element. Array indices must start at 0 and be contiguous. Variables setting this array: {}",
+                pointer,
+                siblings.join(", ")
+            );
+        }
+    }
+
+    format!("{}: {}", pointer, message)
+}
+
+/// Renders every outstanding validation failure as a single message.
+fn describe_all(
+    pending: &[Pending],
+    instance: &Value,
+    sources: &HashMap<String, String>,
+) -> String {
+    pending
+        .iter()
+        .map(|item| describe(&item.pointer, &item.message, instance, sources))
+        .collect::<Vec<String>>()
+        .join(", ")
+}
+
+/// Fix and validate the generated JSON against the schema.
+///
+/// See [`fix_and_validate_json_with_sources`]; this variant reports failures by
+/// JSON pointer only, without naming the originating environment variables.
+///
+/// # Arguments
+///
+/// * `schema` - The JSON schema to validate against.
+/// * `config` - The generated configuration object.
+/// * `retried` - When true, validate and report without attempting any fixes.
+///
+/// # Returns
+///
+/// * `Result<Map<String, Value>, String>` - The validated configuration, or a
+///   description of every failure that could not be fixed.
 pub fn fix_and_validate_json(
     schema: &Value,
     config: Map<String, Value>,
     retried: bool,
 ) -> Result<Map<String, Value>, String> {
-    // Validate the generated JSON against the schema
+    fix_and_validate_json_with_sources(schema, config, retried, &HashMap::new())
+}
+
+/// Fix and validate the generated JSON against the schema, repeatedly coercing
+/// mismatched values until the instance validates or stops changing.
+///
+/// Each pass asks the validator what is wrong, coerces every string whose type
+/// does not match, and validates again. Iterating this way is what allows a
+/// value to be refined more than once — `"80 443"` becomes `["80", "443"]` on
+/// one pass and `[80, 443]` on the next, against `items: {type: integer}`.
+///
+/// Locations are addressed with JSON pointers taken straight from the
+/// validator, so array elements are handled the same as object properties.
+///
+/// # Arguments
+///
+/// * `schema` - The JSON schema to validate against.
+/// * `config` - The generated configuration object.
+/// * `retried` - When true, validate and report without attempting any fixes.
+/// * `sources` - Maps a JSON pointer to the environment variable that set it,
+///   used to name the offending variable in error messages.
+///
+/// # Returns
+///
+/// * `Result<Map<String, Value>, String>` - The validated configuration, or a
+///   description of every failure that could not be fixed.
+pub fn fix_and_validate_json_with_sources(
+    schema: &Value,
+    config: Map<String, Value>,
+    retried: bool,
+    sources: &HashMap<String, String>,
+) -> Result<Map<String, Value>, String> {
     let compiled_schema =
         JSONSchema::compile(schema).map_err(|e| format!("Failed to compile schema: {}", e))?;
 
-    let instance = Value::Object(config.clone());
+    let mut instance = Value::Object(config);
+    let passes = if retried { 1 } else { MAX_FIX_PASSES };
 
-    match compiled_schema.validate(&instance) {
-        Ok(_) => Ok(config),
-        Err(errors) => {
-            if retried {
-                // Convert validation errors to a string
-                let error_messages: Vec<String> = errors.map(|e| e.to_string()).collect();
-                return Err(error_messages.join(", "));
-            }
-
-            let mut fixed_config = config.clone();
-            for error in errors {
-                // Collect all path chunks to build the full path
-                let mut path_parts: Vec<String> = Vec::new();
-                for path in error.instance_path.iter() {
-                    if let jsonschema::paths::PathChunk::Property(prop) = path {
-                        path_parts.push(prop.as_ref().to_string());
-                        continue;
-                    }
-                    if let jsonschema::paths::PathChunk::Index(idx) = path {
-                        path_parts.push(idx.to_string());
-                        continue;
-                    }
-                }
-
-                if let Some((last_part, parent_parts)) = path_parts.split_last() {
-                    let mut current = &mut fixed_config;
-                    let mut in_array = false;
-                    for (i, part) in parent_parts.iter().enumerate() {
-                        if in_array {
-                            in_array = false;
-                            continue;
-                        }
-
-                        current = current
-                            .get_mut(part)
-                            .and_then(|v| match v {
-                                Value::Object(map) => Some(map),
-                                Value::Array(arr) => {
-                                    if let Ok(index) = parent_parts[i + 1].parse::<usize>() {
-                                        if index < arr.len() {
-                                            if let Value::Object(map) = &mut arr[index] {
-                                                in_array = true;
-                                                return Some(map);
-                                            } else {
-                                                println!("Failed to get object at index {}", index);
-                                                return None;
-                                            }
-                                        } else {
-                                            println!("Index {} out of bounds", index);
-                                            return None;
-                                        }
-                                    }
-                                    None
-                                }
-                                _ => {
-                                    println!(
-                                        "Failed to get value at path {}",
-                                        path_parts.join(".")
-                                    );
-                                    None
-                                }
-                            })
-                            .unwrap();
-                    }
-
-                    let existing = current.get(last_part.as_str()).cloned().unwrap();
-
-                    if let ValidationErrorKind::Type { kind } = &error.kind {
-                        match kind {
-                            TypeKind::Single(primitive_type) => {
-                                let new_value: Result<Value, String> = match existing {
-                                    Value::String(existing) => {
-                                        match primitive_type {
-                                            PrimitiveType::Array => {
-                                                // Split by spaces or commas and trim each item
-                                                let items: Vec<Value> = existing
-                                                    .split([' ', ','])
-                                                    .filter(|s| !s.is_empty())
-                                                    .map(|s| Value::String(s.trim().to_string()))
-                                                    .collect();
-                                                Ok(Value::Array(items))
-                                            }
-                                            PrimitiveType::Boolean => {
-                                                if let Ok(value) = existing.parse::<bool>() {
-                                                    Ok(Value::Bool(value))
-                                                } else {
-                                                    Err("Unsupported type: Boolean".to_string())
-                                                }
-                                            }
-                                            PrimitiveType::Integer => {
-                                                if let Ok(value) = existing.parse::<i64>() {
-                                                    Ok(Value::Number(value.into()))
-                                                } else {
-                                                    Err("Unsupported type: Integer".to_string())
-                                                }
-                                            }
-                                            PrimitiveType::Null => {
-                                                Err("Unsupported type: Null".to_string())
-                                            }
-                                            PrimitiveType::Number => {
-                                                if let Ok(value) =
-                                                    existing.parse::<serde_json::Number>()
-                                                {
-                                                    Ok(Value::Number(value))
-                                                } else {
-                                                    Err("Unsupported type: Number".to_string())
-                                                }
-                                            }
-                                            PrimitiveType::Object => {
-                                                Err("Unsupported type: Object".to_string())
-                                            }
-                                            PrimitiveType::String => {
-                                                Ok(Value::String(existing.clone()))
-                                            }
-                                        }
-                                    }
-                                    _ => Err(format!(
-                                        "Existing value is not a string: {:#?}",
-                                        existing
-                                    )),
-                                };
-                                current.insert(last_part.to_string(), new_value?);
-                            }
-                            _ => return Err(format!("Unsupported type: {:?}", error.kind)),
-                        }
-                    }
-                }
-            }
-            Ok(fix_and_validate_json(schema, fixed_config, true)?)
+    for _ in 0..passes {
+        let pending = collect_pending(&compiled_schema, &instance);
+        if pending.is_empty() {
+            return Ok(into_object(instance));
         }
+        if retried {
+            return Err(describe_all(&pending, &instance, sources));
+        }
+
+        let mut progressed = false;
+        for item in &pending {
+            match coerce_at(&mut instance, item) {
+                Ok(true) => progressed = true,
+                Ok(false) => {}
+                Err(reason) => {
+                    return Err(describe(&item.pointer, &reason, &instance, sources));
+                }
+            }
+        }
+
+        // Nothing left that we know how to change: report what is still wrong
+        // rather than spinning through the remaining passes.
+        if !progressed {
+            return Err(describe_all(&pending, &instance, sources));
+        }
+    }
+
+    let pending = collect_pending(&compiled_schema, &instance);
+    if pending.is_empty() {
+        Ok(into_object(instance))
+    } else {
+        Err(describe_all(&pending, &instance, sources))
+    }
+}
+
+/// Unwraps the root object. The instance is built from a `Map` and only ever
+/// mutated below the root, so the object variant always holds.
+fn into_object(instance: Value) -> Map<String, Value> {
+    match instance {
+        Value::Object(map) => map,
+        _ => Map::new(),
     }
 }
 
@@ -248,6 +352,12 @@ pub fn create_nested_json(config: &mut Map<String, Value>, path: &str, value: &s
 /// - `path`: a transformed version of the key where double underscores (`__`)
 ///   are replaced with underscores, underscores (`_`) are replaced with dots (`.`),
 ///   and the whole path is converted to lowercase.
+///
+/// Every other character is carried through untouched, so a key that needs a
+/// character the transformation never produces — a dash, most commonly, as in
+/// the HTTP header `X-Forwarded-For` — must contain it literally. Note that
+/// such a name cannot be `export`ed from a POSIX shell; set it through a
+/// container runtime, or with `env 'NAME=value'`.
 ///
 /// # Arguments
 ///

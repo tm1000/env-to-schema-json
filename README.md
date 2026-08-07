@@ -77,11 +77,11 @@ cp target/release/env-to-schema-json /usr/local/bin/
 env-to-schema-json --prefix <PREFIX> [schema.json]
 ```
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `-p, --prefix` | `PREFIX_` | Prefix to filter environment variables |
-| `-s, --schema` | _(none)_ | Path to JSON schema file (omit to read from stdin) |
-| `-d, --debug` | `false` | Print the generated JSON before validation |
+| Flag           | Default   | Description                                        |
+| -------------- | --------- | -------------------------------------------------- |
+| `-p, --prefix` | `PREFIX_` | Prefix to filter environment variables             |
+| `-s, --schema` | _(none)_  | Path to JSON schema file (omit to read from stdin) |
+| `-d, --debug`  | `false`   | Print the generated JSON before validation         |
 
 ### Reading from stdin
 
@@ -99,17 +99,42 @@ env-to-schema-json --prefix MYAPP_ schema.json
 
 Environment variable names are transformed into JSON paths using these rules:
 
-| Env Var | JSON Path |
-|---------|-----------|
-| `APP_HOST=localhost` | `app.host` |
-| `APP_DB__HOST=localhost` | `app.db_host` |
-| `APP_SERVERS__0_HOST=a` | `app.servers[0].host` |
-| `APP_SERVERS__1_HOST=b` | `app.servers[1].host` |
+| Env Var                     | JSON Path                 |
+| --------------------------- | ------------------------- |
+| `APP_HOST=localhost`        | `app.host`                |
+| `APP_DB__HOST=localhost`    | `app.db_host`             |
+| `APP_SERVERS__0_HOST=a`     | `app.servers[0].host`     |
+| `APP_SERVERS__1_HOST=b`     | `app.servers[1].host`     |
+| `APP_SET_X-Forwarded-For=a` | `app.set.x-forwarded-for` |
 
 - Underscores (`_`) become dots (`.`) — creating nested objects
 - Double underscores (`__`) become literal underscores (`_`) — for flat keys containing underscores
 - Numeric path segments create array elements
 - All keys are converted to lowercase
+- Every other character is carried through unchanged
+
+### Keys containing dashes
+
+The transformation produces `.` and `_`, but never `-`. A key that needs a dash
+must contain one literally — `__` escapes to an underscore, so
+`X__FORWARDED__FOR` yields `x_forwarded_for`, a different key. This matters most
+for HTTP header names:
+
+| Env Var                   | JSON Key          |                  |
+| ------------------------- | ----------------- | ---------------- |
+| `..._X__FORWARDED__FOR_0` | `x_forwarded_for` | ✗ not the header |
+| `..._X-Forwarded-For_0`   | `x-forwarded-for` | ✓                |
+
+A name containing a dash is not a valid shell identifier and cannot be
+`export`ed. Set it through a container runtime (Docker Compose's `environment:`
+passes names straight through), or with `env 'NAME=value' ...` when testing
+locally.
+
+### Array indices
+
+Indices must start at `0` and be contiguous. Setting `ROUTES_2` without
+`ROUTES_0` and `ROUTES_1` leaves unset elements in the array, and validation
+fails with an error naming the variables involved.
 
 ## Development
 

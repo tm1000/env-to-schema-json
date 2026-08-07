@@ -1,7 +1,9 @@
 use env_to_schema_json::{
-    create_nested_json, fix_and_validate_json, process_env_vars, resolve_ref,
+    create_nested_json, fix_and_validate_json, fix_and_validate_json_with_sources, path_to_pointer,
+    process_env_vars, resolve_ref,
 };
 use serde_json::{Map, Value, json};
+use std::collections::HashMap;
 use std::env;
 
 #[test]
@@ -369,4 +371,259 @@ fn test_resolve_ref_deep_path() {
     let result = resolve_ref(&schema, "#/definitions/address/properties/street").unwrap();
 
     assert_eq!(result, &json!({"type": "string"}));
+}
+
+// --- Dash handling -------------------------------------------------------
+//
+// The path transformation produces `.` and `_` but never `-`. A dash therefore
+// has to survive verbatim, because keys like the HTTP header `X-Forwarded-For`
+// have no other spelling. Writing `X__FORWARDED__FOR` yields `x_forwarded_for`,
+// which is a different key entirely.
+
+#[test]
+fn test_process_env_vars_preserves_dashes() {
+    unsafe {
+        env::set_var("DASHPREFIX_HEADERS_SET_X-Forwarded-For_0", "value");
+
+        let result = process_env_vars("DASHPREFIX_").unwrap();
+
+        assert_eq!(
+            result["DASHPREFIX_HEADERS_SET_X-Forwarded-For_0"].path,
+            "headers.set.x-forwarded-for.0"
+        );
+
+        env::remove_var("DASHPREFIX_HEADERS_SET_X-Forwarded-For_0");
+    }
+}
+
+#[test]
+fn test_process_env_vars_double_underscore_is_not_a_dash() {
+    // The historical mistake: `__` escapes to a literal underscore, not a dash.
+    unsafe {
+        env::set_var("UNDERPREFIX_X__FORWARDED__FOR", "value");
+
+        let result = process_env_vars("UNDERPREFIX_").unwrap();
+
+        assert_eq!(
+            result["UNDERPREFIX_X__FORWARDED__FOR"].path,
+            "x_forwarded_for"
+        );
+
+        env::remove_var("UNDERPREFIX_X__FORWARDED__FOR");
+    }
+}
+
+#[test]
+fn test_process_env_vars_dash_alongside_double_underscore() {
+    unsafe {
+        env::set_var("MIXEDPREFIX_X-Real-IP__RAW", "value");
+
+        let result = process_env_vars("MIXEDPREFIX_").unwrap();
+
+        assert_eq!(result["MIXEDPREFIX_X-Real-IP__RAW"].path, "x-real-ip_raw");
+
+        env::remove_var("MIXEDPREFIX_X-Real-IP__RAW");
+    }
+}
+
+#[test]
+fn test_create_nested_json_dashed_key() {
+    let mut config = Map::new();
+
+    create_nested_json(
+        &mut config,
+        "headers.request.set.x-forwarded-for.0",
+        "{http.request.header.x-real-ip}",
+    );
+
+    let expected = json!({
+        "headers": {
+            "request": {
+                "set": {
+                    "x-forwarded-for": ["{http.request.header.x-real-ip}"]
+                }
+            }
+        }
+    });
+
+    assert_eq!(Value::Object(config), expected);
+}
+
+#[test]
+fn test_fix_and_validate_json_coerces_dashed_property() {
+    // A dash is legal inside a JSON pointer segment, so coercion must reach it.
+    let schema = json!({
+        "type": "object",
+        "properties": {"x-max-age": {"type": "integer"}}
+    });
+
+    let mut config = Map::new();
+    create_nested_json(&mut config, "x-max-age", "3600");
+
+    let result = fix_and_validate_json(&schema, config, false).unwrap();
+
+    assert_eq!(result["x-max-age"], json!(3600));
+}
+
+// --- JSON pointer conversion ---------------------------------------------
+
+#[test]
+fn test_path_to_pointer() {
+    assert_eq!(path_to_pointer("servers.0.port"), "/servers/0/port");
+    assert_eq!(path_to_pointer("key"), "/key");
+    assert_eq!(
+        path_to_pointer("headers.set.x-forwarded-for.0"),
+        "/headers/set/x-forwarded-for/0"
+    );
+}
+
+#[test]
+fn test_path_to_pointer_escapes_reserved_characters() {
+    assert_eq!(path_to_pointer("a~b"), "/a~0b");
+    assert_eq!(path_to_pointer("a/b"), "/a~1b");
+}
+
+// --- Array coercion ------------------------------------------------------
+
+#[test]
+fn test_fix_and_validate_json_coerces_indexed_array_element() {
+    // Regression test: an error whose path ends in an array index used to
+    // panic with "index out of bounds" inside the error-recovery path. No gap
+    // is needed to trigger it -- index 0 alone was enough.
+    let schema = json!({
+        "type": "object",
+        "properties": {"ports": {"type": "array", "items": {"type": "integer"}}}
+    });
+
+    let mut config = Map::new();
+    create_nested_json(&mut config, "ports.0", "8080");
+    create_nested_json(&mut config, "ports.1", "9090");
+
+    let result = fix_and_validate_json(&schema, config, false).unwrap();
+
+    assert_eq!(result["ports"], json!([8080, 9090]));
+}
+
+#[test]
+fn test_fix_and_validate_json_splits_then_coerces_array_items() {
+    // Splitting a string into an array produces strings; a further pass has to
+    // coerce those against the `items` schema.
+    let schema = json!({
+        "type": "object",
+        "properties": {"ports": {"type": "array", "items": {"type": "integer"}}}
+    });
+
+    let mut config = Map::new();
+    config.insert("ports".to_string(), Value::String("8080 9090".to_string()));
+
+    let result = fix_and_validate_json(&schema, config, false).unwrap();
+
+    assert_eq!(result["ports"], json!([8080, 9090]));
+}
+
+#[test]
+fn test_fix_and_validate_json_coerces_nested_array_object_element() {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "servers": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"port": {"type": "integer"}}
+                }
+            }
+        }
+    });
+
+    let mut config = Map::new();
+    create_nested_json(&mut config, "servers.0.port", "8080");
+    create_nested_json(&mut config, "servers.1.port", "9090");
+
+    let result = fix_and_validate_json(&schema, config, false).unwrap();
+
+    assert_eq!(result["servers"][0]["port"], json!(8080));
+    assert_eq!(result["servers"][1]["port"], json!(9090));
+}
+
+// --- Sparse arrays and error attribution ---------------------------------
+
+fn sparse_route_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "routes": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"port": {"type": "integer"}}
+                }
+            }
+        }
+    })
+}
+
+#[test]
+fn test_fix_and_validate_json_sparse_array_returns_err_not_panic() {
+    // Regression test: a gap in the array indices leaves nulls behind, whose
+    // validation errors used to index past the end of the path components.
+    let mut config = Map::new();
+    create_nested_json(&mut config, "routes.2.port", "8080");
+
+    let result = fix_and_validate_json(&sparse_route_schema(), config, false);
+
+    assert!(result.is_err());
+    assert!(!result.unwrap_err().is_empty());
+}
+
+#[test]
+fn test_fix_and_validate_json_sparse_array_names_source_variable() {
+    let mut config = Map::new();
+    create_nested_json(&mut config, "routes.2.port", "8080");
+
+    let mut sources = HashMap::new();
+    sources.insert(
+        path_to_pointer("routes.2.port"),
+        "CS_ROUTES_2_PORT".to_string(),
+    );
+
+    let error = fix_and_validate_json_with_sources(&sparse_route_schema(), config, false, &sources)
+        .unwrap_err();
+
+    assert!(error.contains("CS_ROUTES_2_PORT"), "{}", error);
+    assert!(error.contains("contiguous"), "{}", error);
+}
+
+#[test]
+fn test_fix_and_validate_json_error_names_source_variable() {
+    let schema = json!({
+        "type": "object",
+        "properties": {"enabled": {"type": "boolean"}}
+    });
+
+    let mut config = Map::new();
+    config.insert("enabled".to_string(), Value::String("nope".to_string()));
+
+    let mut sources = HashMap::new();
+    sources.insert("/enabled".to_string(), "CS_ENABLED".to_string());
+
+    let error = fix_and_validate_json_with_sources(&schema, config, false, &sources).unwrap_err();
+
+    assert!(error.contains("CS_ENABLED"), "{}", error);
+    assert!(error.contains("Boolean"), "{}", error);
+}
+
+#[test]
+fn test_fix_and_validate_json_without_sources_reports_pointer() {
+    let schema = json!({
+        "type": "object",
+        "properties": {"enabled": {"type": "boolean"}}
+    });
+
+    let mut config = Map::new();
+    config.insert("enabled".to_string(), Value::String("nope".to_string()));
+
+    let error = fix_and_validate_json(&schema, config, false).unwrap_err();
+
+    assert!(error.contains("/enabled"), "{}", error);
 }
