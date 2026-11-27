@@ -1,6 +1,5 @@
-use jsonschema::JSONSchema;
 use jsonschema::error::{TypeKind, ValidationErrorKind};
-use jsonschema::primitive_type::PrimitiveType;
+use jsonschema::{JsonType, Validator};
 use serde_json::Map;
 use serde_json::Value;
 use std::{collections::HashMap, env};
@@ -21,7 +20,7 @@ const MAX_FIX_PASSES: usize = 8;
 /// after the borrow taken by the validator has been released.
 struct Pending {
     pointer: String,
-    target: Option<PrimitiveType>,
+    target: Option<JsonType>,
     message: String,
 }
 
@@ -47,28 +46,26 @@ pub fn path_to_pointer(path: &str) -> String {
 
 /// Collects the current validation errors as owned [`Pending`] entries. An
 /// empty result means the instance validates cleanly.
-fn collect_pending(compiled_schema: &JSONSchema, instance: &Value) -> Vec<Pending> {
-    match compiled_schema.validate(instance) {
-        Ok(()) => Vec::new(),
-        Err(errors) => errors
-            .map(|error| Pending {
-                pointer: error.instance_path.to_string(),
-                target: match &error.kind {
-                    ValidationErrorKind::Type {
-                        kind: TypeKind::Single(primitive_type),
-                    } => Some(*primitive_type),
-                    _ => None,
-                },
-                message: error.to_string(),
-            })
-            .collect(),
-    }
+fn collect_pending(validator: &Validator, instance: &Value) -> Vec<Pending> {
+    validator
+        .iter_errors(instance)
+        .map(|error| Pending {
+            pointer: error.instance_path.to_string(),
+            target: match &error.kind {
+                ValidationErrorKind::Type {
+                    kind: TypeKind::Single(json_type),
+                } => Some(*json_type),
+                _ => None,
+            },
+            message: error.to_string(),
+        })
+        .collect()
 }
 
 /// Converts a string into the requested primitive type.
-fn coerce_string(existing: &str, target: PrimitiveType) -> Result<Value, String> {
+fn coerce_string(existing: &str, target: JsonType) -> Result<Value, String> {
     match target {
-        PrimitiveType::Array => {
+        JsonType::Array => {
             // Split by spaces or commas and trim each item. Items stay strings
             // here; a later pass coerces them against the `items` schema.
             let items: Vec<Value> = existing
@@ -78,21 +75,21 @@ fn coerce_string(existing: &str, target: PrimitiveType) -> Result<Value, String>
                 .collect();
             Ok(Value::Array(items))
         }
-        PrimitiveType::Boolean => existing
+        JsonType::Boolean => existing
             .parse::<bool>()
             .map(Value::Bool)
             .map_err(|_| "Unsupported type: Boolean".to_string()),
-        PrimitiveType::Integer => existing
+        JsonType::Integer => existing
             .parse::<i64>()
             .map(|value| Value::Number(value.into()))
             .map_err(|_| "Unsupported type: Integer".to_string()),
-        PrimitiveType::Number => existing
+        JsonType::Number => existing
             .parse::<serde_json::Number>()
             .map(Value::Number)
             .map_err(|_| "Unsupported type: Number".to_string()),
-        PrimitiveType::String => Ok(Value::String(existing.to_string())),
-        PrimitiveType::Null => Err("Unsupported type: Null".to_string()),
-        PrimitiveType::Object => Err("Unsupported type: Object".to_string()),
+        JsonType::String => Ok(Value::String(existing.to_string())),
+        JsonType::Null => Err("Unsupported type: Null".to_string()),
+        JsonType::Object => Err("Unsupported type: Object".to_string()),
     }
 }
 
@@ -226,14 +223,14 @@ pub fn fix_and_validate_json_with_sources(
     retried: bool,
     sources: &HashMap<String, String>,
 ) -> Result<Map<String, Value>, String> {
-    let compiled_schema =
-        JSONSchema::compile(schema).map_err(|e| format!("Failed to compile schema: {}", e))?;
+    let validator = jsonschema::validator_for(schema)
+        .map_err(|e| format!("Failed to compile schema: {}", e))?;
 
     let mut instance = Value::Object(config);
     let passes = if retried { 1 } else { MAX_FIX_PASSES };
 
     for _ in 0..passes {
-        let pending = collect_pending(&compiled_schema, &instance);
+        let pending = collect_pending(&validator, &instance);
         if pending.is_empty() {
             return Ok(into_object(instance));
         }
@@ -259,7 +256,7 @@ pub fn fix_and_validate_json_with_sources(
         }
     }
 
-    let pending = collect_pending(&compiled_schema, &instance);
+    let pending = collect_pending(&validator, &instance);
     if pending.is_empty() {
         Ok(into_object(instance))
     } else {
